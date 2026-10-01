@@ -1,0 +1,44 @@
+# SITE_ADDRESS:
+#   локально / в CI  → ":80"            (чистый HTTP, без сертификатов)
+#   в проде          → "desk.example.ru" (Caddy сам получит и будет продлевать сертификат Let's Encrypt,
+#                                         и включит редирект http → https)
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# Структурированный access-лог в stdout → `docker compose logs caddy`
+	log {
+		output stdout
+		format json
+	}
+
+	header {
+		# HSTS имеет смысл только по HTTPS; по http браузер его игнорирует.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# /api/* → контейнер api. handle_path отрезает префикс: /api/tickets → /tickets.
+	handle_path /api/* {
+		reverse_proxy api:3000 {
+			# Активная проверка: если api нездоров, Caddy сразу отдаёт 502, а не висит.
+			health_uri /health/live
+			health_interval 10s
+		}
+	}
+
+	# Всё остальное — SPA. Неизвестный путь (/tickets/42) отдаём index.html — роутинг делает React Router.
+	handle {
+		root * /srv
+		@assets path /assets/*
+		# Имена файлов в /assets содержат хэш содержимого → можно кэшировать "навсегда".
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		# index.html кэшировать нельзя, иначе после деплоя браузер будет грузить старые ассеты.
+		@html not path /assets/*
+		header @html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

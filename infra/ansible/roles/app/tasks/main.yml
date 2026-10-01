@@ -1,0 +1,109 @@
+---
+# Выкладка приложения: compose-файл, .env из секретов, запуск нужной версии образов.
+
+# ---------- Какую версию ставим ----------
+# image_tag передаётся явно (-e image_tag=sha-abc1234) из CI или при ручном откате.
+# Если не передан (например, site.yml для настройки сервера) — оставляем версию, которая уже работает.
+- name: Read last good tag
+  ansible.builtin.slurp:
+    src: "{{ app_dir }}/.last_good_tag"
+  register: last_good_tag_file
+  failed_when: false
+  when: image_tag is not defined
+
+- name: Resolve image tag
+  ansible.builtin.set_fact:
+    app_image_tag: >-
+      {{ image_tag if image_tag is defined
+         else (last_good_tag_file.content | default('') | b64decode | trim) }}
+
+- name: Fail if no image tag is known
+  ansible.builtin.assert:
+    that: app_image_tag | length > 0
+    fail_msg: "Не задан image_tag и нет {{ app_dir }}/.last_good_tag. Запустите: ansible-playbook deploy.yml -e image_tag=sha-..."
+
+# ---------- Секреты ----------
+# Расшифровка происходит на машине, где запущен ansible (ноутбук или GitHub runner) ключом age
+# (~/.config/sops/age/keys.txt или переменная SOPS_AGE_KEY). На сервер уходит только готовый .env.
+- name: Load secrets (SOPS + age)
+  community.sops.load_vars:
+    file: "{{ secrets_file }}"
+    name: secrets
+  no_log: true # значения секретов не попадут в вывод ansible и логи CI
+
+# ---------- Файлы ----------
+- name: App directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0750"
+
+- name: Copy compose file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../compose.prod.yml"
+    dest: "{{ app_dir }}/compose.yml"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0644"
+  register: compose_file
+
+- name: Copy backup script (монтируется в контейнер backup)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backup/backup.sh"
+    dest: "{{ app_dir }}/backup.sh"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0755"
+
+- name: Render .env with secrets
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ app_dir }}/.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600" # читать может только владелец
+  no_log: true
+  register: env_file
+
+# ---------- Реестр образов ----------
+# Если пакеты в GHCR приватные — нужен токен с правом read:packages (хранится в SOPS как GHCR_TOKEN).
+# Если пакеты публичные — шаг пропускается.
+- name: Log in to GHCR
+  community.docker.docker_login:
+    registry_url: ghcr.io
+    username: "{{ secrets.GHCR_USER }}"
+    password: "{{ secrets.GHCR_TOKEN }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  no_log: true
+  when: secrets.GHCR_TOKEN | default('') | length > 0
+
+# ---------- Запуск ----------
+- name: Check which services are running
+  ansible.builtin.command: docker compose ps --status running --services
+  args:
+    chdir: "{{ app_dir }}"
+  register: running_services
+  changed_when: false
+  become: true
+  become_user: "{{ deploy_user }}"
+
+# compose up запускаем, только если что-то поменялось или какой-то сервис не работает.
+# Поэтому второй прогон плейбука даёт changed=0.
+# pull: missing — теги образов неизменяемые (sha-<commit>): если образ с таким тегом уже есть, качать нечего.
+- name: Run docker compose up
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_dir }}"
+    state: present
+    pull: missing
+    remove_orphans: true
+    wait: true # ждём healthy у api (healthcheck) — иначе "деплой прошёл", а сервис лежит
+    wait_timeout: 180
+  become: true
+  become_user: "{{ deploy_user }}"
+  when: >-
+    compose_file.changed or env_file.changed or
+    (['db', 'api', 'web'] | difference(running_services.stdout_lines) | length > 0)
+  notify: Prune dangling images

@@ -1,0 +1,10 @@
+# ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: community.sops # расшифровка infra/secrets/*.enc.yaml
+    version: ">=2.0.0"
+  - name: community.docker # docker_compose_v2, docker_login
+    version: ">=4.0.0"
+  - name: community.general # ufw
+    version: ">=9.0.0"
+  - name: ansible.posix # authorized_key
+    version: ">=1.5.0"

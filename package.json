@@ -1,0 +1,29 @@
+{
+  "name": "service-desk",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter api --filter web dev",
+    "build": "pnpm -r build",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -F api test",
+    "gen:client": "pnpm -F api gen:openapi && pnpm -F @service-desk/api-client gen",
+    "db:migrate": "pnpm -F api migrate",
+    "db:seed": "pnpm -F api seed",
+    "db:codegen": "pnpm -F api db:codegen",
+    "e2e": "pnpm -F e2e test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^16.0.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.0"
+  }
+}

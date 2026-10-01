@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Service Desk: pg_dump to {{ backup_dir }}
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory={{ app_dir }}
+# Контейнер backup (postgres:16-alpine) подключается к db по внутренней docker-сети.
+ExecStart=/usr/bin/docker compose --profile tools run --rm backup
+# Низкий приоритет CPU и диска — бэкап не должен тормозить живой сервис.
+Nice=10
+IOSchedulingClass=idle

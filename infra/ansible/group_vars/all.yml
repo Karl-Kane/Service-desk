@@ -1,0 +1,18 @@
+---
+# Публичные (несекретные) параметры окружения.
+domain: desk.example.ru
+image_registry: ghcr.io/your-github-login
+app_dir: /opt/service-desk
+backup_dir: /opt/backups
+
+deploy_user: deploy
+# Публичный SSH-ключ, который попадёт в authorized_keys пользователя deploy.
+# Можно перечислить несколько (ваш ноутбук + ключ GitHub Actions).
+deploy_ssh_public_keys:
+  - "{{ lookup('ansible.builtin.file', '~/.ssh/id_ed25519.pub') }}"
+  # - "ssh-ed25519 AAAA... github-actions-deploy"
+
+# Зашифрованный файл секретов (расшифровывается community.sops на машине, где запускается ansible).
+secrets_file: "{{ playbook_dir }}/../secrets/prod.enc.yaml"
+
+swap_size_mb: 1024

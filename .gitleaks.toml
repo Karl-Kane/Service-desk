@@ -1,0 +1,20 @@
+# Конфиг gitleaks: стандартные правила + явный allowlist заведомо НЕсекретных dev-значений.
+# Каждое исключение — осознанное и описанное, а не "заглушить, чтобы CI позеленел".
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Dev/test-значения, не используемые в проде"
+regexes = [
+  # Значение по умолчанию для локальной разработки (config.ts, compose.yml). В проде SESSION_SECRET
+  # обязателен и приходит из SOPS — без него приложение не стартует.
+  '''dev-only-session-secret-change-me-32chars''',
+]
+paths = [
+  # Тестовые пароли демо-пользователей и фикстуры
+  '''apps/api/src/seed\.ts''',
+  '''e2e/tests/.*''',
+  '''apps/api/test/.*''',
+  # Шифротекст SOPS — это и есть способ хранить секреты в репозитории
+  '''infra/secrets/.*\.enc\.yaml''',
+]

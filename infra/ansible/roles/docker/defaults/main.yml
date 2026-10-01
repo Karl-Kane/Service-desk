@@ -1,0 +1,9 @@
+---
+deploy_user: deploy
+docker_daemon_config:
+  log-driver: json-file
+  log-opts:
+    max-size: "10m"
+    max-file: "5"
+  # Контейнеры продолжают работать при перезапуске dockerd (например, при обновлении docker через apt).
+  live-restore: true

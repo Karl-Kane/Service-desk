@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Service Desk: verify latest backup restores
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=BACKUP_DIR={{ backup_dir }}
+ExecStart=/usr/local/bin/restore-check.sh
+Nice=10

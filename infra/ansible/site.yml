@@ -1,0 +1,17 @@
+---
+# Полная подготовка сервера с нуля + запуск приложения.
+#   Первый раз:  ansible-playbook site.yml -e ansible_user=root
+#   Дальше:      ansible-playbook site.yml            (идемпотентно: второй прогон → changed=0)
+#   Только диф:  ansible-playbook site.yml --check --diff
+- name: Provision Service Desk server
+  hosts: prod
+  become: true
+  roles:
+    - role: base
+      tags: [base]
+    - role: docker
+      tags: [docker]
+    - role: app
+      tags: [app]
+    - role: backup
+      tags: [backup]

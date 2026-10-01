@@ -1,0 +1,97 @@
+# Продакшн. Лежит на сервере в /opt/service-desk/compose.yml (копирует Ansible, роль app).
+# Значения ${...} берутся из /opt/service-desk/.env — его генерирует Ansible из расшифрованных SOPS-секретов.
+# Образы НЕ собираются на сервере — только скачиваются из GHCR по неизменяемому тегу sha-<commit>.
+name: service-desk
+
+x-logging: &logging
+  # Ротация логов Docker: без неё json-логи однажды съедят весь диск.
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: service_desk
+      POSTGRES_USER: service_desk
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # НЕТ секции ports: БД доступна только внутри docker-сети service-desk_default.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U service_desk -d service_desk"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+    # Защита маленького VPS: БД не съест всю память и не вызовет OOM у остальных.
+    shm_size: 128mb
+
+  migrate:
+    image: ${IMAGE_REGISTRY}/service-desk-api:${IMAGE_TAG:?IMAGE_TAG is required}
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://service_desk:${DB_PASSWORD}@db:5432/service_desk
+    healthcheck: { disable: true }
+    restart: "no"
+    logging: *logging
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    image: ${IMAGE_REGISTRY}/service-desk-api:${IMAGE_TAG}
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://service_desk:${DB_PASSWORD}@db:5432/service_desk
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits: { memory: 384m }
+
+  web:
+    image: ${IMAGE_REGISTRY}/service-desk-web:${IMAGE_TAG}
+    environment:
+      SITE_ADDRESS: ${DOMAIN:?DOMAIN is required}
+    # Наружу торчат ТОЛЬКО 80 и 443 (ufw разрешает ещё 22 для SSH).
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      # Сертификаты Let's Encrypt. Без тома — новый сертификат при каждом пересоздании контейнера
+      # и быстрый упор в rate limit Let's Encrypt (5 дубликатов в неделю).
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+    logging: *logging
+
+  # Запускается systemd-таймером: docker compose run --rm backup (см. infra/backup, роль backup).
+  backup:
+    image: postgres:16-alpine
+    profiles: ["tools"]
+    entrypoint: ["/bin/sh", "/scripts/backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: service_desk
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: service_desk
+      BACKUP_DIR: /backups
+    volumes:
+      - ./backup.sh:/scripts/backup.sh:ro
+      - /opt/backups:/backups
+    depends_on:
+      db: { condition: service_healthy }
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

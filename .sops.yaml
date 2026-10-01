@@ -1,0 +1,8 @@
+# Правила SOPS: какие файлы каким ключом шифровать.
+# Публичный age-ключ (age1...) — НЕ секрет, его можно коммитить. Приватный — только у вас
+# (~/.config/sops/age/keys.txt) и в GitHub Secret SOPS_AGE_KEY.
+#
+# Замените age1... на свой публичный ключ: `age-keygen -o keys.txt` печатает его в консоль.
+creation_rules:
+  - path_regex: infra/secrets/.*\.enc\.yaml$
+    age: age1replacewithyourpublickeyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

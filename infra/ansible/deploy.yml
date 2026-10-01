@@ -1,0 +1,9 @@
+---
+# Выкатка конкретной версии (используется GitHub Actions и для ручного отката):
+#   ansible-playbook deploy.yml -e image_tag=sha-1a2b3c4
+# Только роль app: сервер уже подготовлен site.yml.
+- name: Deploy Service Desk
+  hosts: prod
+  become: true
+  roles:
+    - app

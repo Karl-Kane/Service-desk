@@ -1,0 +1,5 @@
+# deploy_user, app_dir, backup_dir — ОБЩИЕ параметры окружения (group_vars/all.yml), используются
+# несколькими ролями намеренно. Префиксовать их именем роли (base_deploy_user, docker_deploy_user...)
+# значит дублировать одно значение в нескольких местах.
+skip_list:
+  - var-naming[no-role-prefix]

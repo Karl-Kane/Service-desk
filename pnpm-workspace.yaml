@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+  - e2e
+
+# Нативные модули, которым разрешено выполнять postinstall-скрипты (сборка/загрузка бинарников).
+onlyBuiltDependencies:
+  - argon2
+  - esbuild

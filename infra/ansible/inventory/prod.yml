@@ -1,0 +1,11 @@
+# Инвентарь: какие серверы и как к ним ходить.
+# IP/домен — не секрет (они в DNS), поэтому лежат открыто. Замените на свои.
+all:
+  children:
+    prod:
+      hosts:
+        desk:
+          ansible_host: 203.0.113.10 # IP вашего VPS (203.0.113.0/24 — документационный диапазон)
+          ansible_user: deploy
+          # Первый прогон (пользователя deploy ещё нет):
+          #   ansible-playbook site.yml -e ansible_user=root

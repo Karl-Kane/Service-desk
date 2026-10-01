@@ -1,0 +1,4 @@
+---
+deploy_user: deploy
+swap_size_mb: 1024
+deploy_ssh_public_keys: []

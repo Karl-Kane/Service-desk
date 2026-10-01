@@ -1,0 +1,43 @@
+---
+# Ночной бэкап БД и еженедельная проверка восстановления — через systemd-таймеры.
+# Почему systemd, а не cron: логи сразу в journald (journalctl -u backup), видно статус последнего
+# запуска (systemctl status backup), Persistent=true догоняет пропущенный запуск после перезагрузки.
+
+- name: Backup directory
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700" # дампы содержат все данные, включая хэши паролей
+
+- name: Install restore-check script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backup/restore-check.sh"
+    dest: /usr/local/bin/restore-check.sh
+    mode: "0755"
+
+- name: Install systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - backup.service
+    - backup.timer
+    - restore-check.service
+    - restore-check.timer
+  notify: Reload systemd
+
+# Применяем daemon-reload сейчас, а не в конце плея — иначе enable ниже не увидит новые юниты.
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - backup.timer
+    - restore-check.timer

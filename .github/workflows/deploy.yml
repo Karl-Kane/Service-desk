@@ -1,0 +1,133 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # ручной запуск из вкладки Actions
+
+# Два деплоя одновременно — гонка за сервер. Второй ждёт первого (не отменяет: прерванный деплой хуже).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write # push образов в GHCR тем же GITHUB_TOKEN, без отдельного токена
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build:
+    name: Build & push images
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        # Неизменяемый тег по коммиту: по тегу всегда понятно, какой код работает на проде,
+        # и откат = деплой предыдущего тега. "latest" для деплоя не используем никогда.
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/service-desk-api:${{ steps.tag.outputs.tag }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/caddy/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/service-desk-web:${{ steps.tag.outputs.tag }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  deploy:
+    name: Deploy to production
+    needs: build
+    runs-on: ubuntu-24.04
+    # Environment: отдельные секреты и (опционально) ручное подтверждение / ограничение веток.
+    environment:
+      name: production
+      url: https://${{ vars.DOMAIN }}
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      SOPS_VERSION: v3.10.2
+    defaults:
+      run:
+        working-directory: infra/ansible
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible, collections and sops
+        run: |
+          pipx install --include-deps "ansible-core>=2.17,<2.19"
+          ansible-galaxy collection install -r requirements.yml
+          curl -fsSL -o /usr/local/bin/sops \
+            "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
+          chmod +x /usr/local/bin/sops
+
+      - name: SSH key
+        # Приватный ключ отдельного пользователя-деплоера; known_hosts зафиксирован заранее
+        # (ssh-keyscan вручную, один раз), чтобы исключить MITM при первом подключении из CI.
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Remember previous good tag
+        id: prev
+        run: |
+          PREV=$(ssh deploy@"$DEPLOY_HOST" 'cat /opt/service-desk/.last_good_tag 2>/dev/null || true')
+          echo "Previous good tag: ${PREV:-<none>}"
+          echo "tag=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Ansible deploy
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }} # sops читает приватный age-ключ из этой переменной
+          ANSIBLE_FORCE_COLOR: "1"
+        run: ansible-playbook deploy.yml -e "image_tag=$TAG" -e "ansible_host=$DEPLOY_HOST"
+
+      - name: Smoke test
+        id: smoke
+        working-directory: .
+        # Проверяем снаружи, через Caddy и HTTPS, как пользователь: DNS → TLS → proxy → api → БД.
+        run: |
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
+            "https://${{ vars.DOMAIN }}/api/health/ready"
+
+      - name: Mark tag as good
+        if: steps.smoke.outcome == 'success'
+        run: ssh deploy@"$DEPLOY_HOST" "echo '$TAG' > /opt/service-desk/.last_good_tag"
+
+      - name: Rollback to previous tag
+        if: failure() && steps.prev.outputs.tag != ''
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          PREV: ${{ steps.prev.outputs.tag }}
+        run: |
+          echo "::error::Deploy of $TAG failed, rolling back to $PREV"
+          ansible-playbook deploy.yml -e "image_tag=$PREV" -e "ansible_host=$DEPLOY_HOST"
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
+            "https://${{ vars.DOMAIN }}/api/health/ready"

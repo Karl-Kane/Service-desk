@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nightly Service Desk backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# Если сервер был выключен в 03:00 — запустить при включении.
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

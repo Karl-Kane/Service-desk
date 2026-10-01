@@ -1,0 +1,87 @@
+# Локальная разработка и CI (e2e). Прод — compose.prod.yml.
+#
+#   docker compose up -d db                 # только БД, API/web запускаются через `pnpm dev`
+#   docker compose up -d --build --wait     # весь стек: http://localhost:8080
+#   docker compose exec api node dist/seed.js
+#
+# Пароли здесь — заведомо dev-значения, а не секреты. Прод-секреты — только в infra/secrets (SOPS).
+name: service-desk
+
+x-db-env: &db-env
+  DATABASE_URL: postgres://service_desk:service_desk@db:5432/service_desk
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: service_desk
+      POSTGRES_USER: service_desk
+      POSTGRES_PASSWORD: service_desk
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Локально публикуем ТОЛЬКО на 127.0.0.1 — для `pnpm dev` и интеграционных тестов.
+    # В compose.prod.yml секции ports у db нет вообще.
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U service_desk -d service_desk"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Одноразовый контейнер: накатывает миграции и завершается с кодом 0 (или ≠0 при ошибке).
+  migrate:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: service-desk-api:dev
+    command: ["node", "dist/migrate.js"]
+    environment: *db-env
+    healthcheck: { disable: true }
+    restart: "no"
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: service-desk-api:dev
+    environment:
+      <<: *db-env
+      SESSION_SECRET: dev-only-session-secret-change-me-32chars
+      COOKIE_SECURE: "false"
+      LOG_LEVEL: info
+      # Разрешаем seed демо-пользователей в этом (не боевом) окружении
+      ALLOW_DEMO_SEED: "true"
+    depends_on:
+      # API стартует только после УСПЕШНЫХ миграций. Упала миграция → api не запустится.
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build: { context: ., dockerfile: infra/caddy/Dockerfile }
+    image: service-desk-web:dev
+    environment:
+      SITE_ADDRESS: ":80"
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Ручной/тестовый запуск бэкапа: docker compose --profile tools run --rm backup
+  backup:
+    image: postgres:16-alpine
+    profiles: ["tools"]
+    entrypoint: ["/bin/sh", "/scripts/backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: service_desk
+      PGPASSWORD: service_desk
+      PGDATABASE: service_desk
+      BACKUP_DIR: /backups
+    volumes:
+      - ./infra/backup/backup.sh:/scripts/backup.sh:ro
+      - ./.backups:/backups
+    depends_on:
+      db: { condition: service_healthy }
+
+volumes:
+  pgdata:

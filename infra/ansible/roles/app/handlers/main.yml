@@ -1,0 +1,8 @@
+---
+# Удаляет только безымянные (dangling) слои после обновления. Старые версии с тегами остаются —
+# они нужны для быстрого отката без повторного скачивания.
+- name: Prune dangling images
+  ansible.builtin.command: docker image prune -f
+  become: true
+  become_user: "{{ deploy_user }}"
+  changed_when: false

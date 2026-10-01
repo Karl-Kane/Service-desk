@@ -1,0 +1,136 @@
+---
+# Базовая безопасность и гигиена Ubuntu 24.04.
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - ufw
+      - fail2ban
+      - python3-systemd # backend=systemd для fail2ban
+      - unattended-upgrades
+      - jq
+      - python3-requests # нужен модулю community.docker.docker_login
+      - python3-yaml # нужен модулю community.docker.docker_compose_v2
+    state: present
+    update_cache: true
+    cache_valid_time: 3600 # не дёргать apt update чаще раза в час → идемпотентность
+
+# ---------- Пользователь deploy ----------
+- name: Create deploy user
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    groups: [sudo]
+    append: true
+    create_home: true
+
+- name: Authorized SSH keys for deploy
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ deploy_ssh_public_keys | join('\n') }}"
+    exclusive: true # в authorized_keys ТОЛЬКО перечисленные ключи; чужой ключ будет удалён
+
+- name: Passwordless sudo for deploy (пароля у пользователя нет — вход только по ключу)
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-deploy
+    content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s # битый sudoers = потеря sudo; visudo проверит до записи
+
+# ---------- SSH ----------
+- name: Harden sshd (drop-in config)
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart ssh
+
+# ---------- Firewall ----------
+# ВАЖНО: порты, опубликованные Docker (ports: в compose), обходят ufw — Docker пишет свои правила
+# iptables в цепочку DOCKER раньше ufw. Поэтому главная защита БД — отсутствие `ports:` у db в compose,
+# а ufw закрывает всё остальное на хосте.
+- name: Allow SSH, HTTP, HTTPS
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "22", proto: tcp }
+    - { port: "80", proto: tcp }
+    - { port: "443", proto: tcp }
+    - { port: "443", proto: udp }
+
+- name: Default deny incoming, enable ufw
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+
+# ---------- Автообновления безопасности ----------
+- name: Enable unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: "0644"
+
+# ---------- fail2ban ----------
+- name: Configure fail2ban sshd jail
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.local
+    content: |
+      [DEFAULT]
+      bantime = 1h
+      findtime = 10m
+      maxretry = 5
+      backend = systemd
+
+      [sshd]
+      enabled = true
+    mode: "0644"
+  notify: Restart fail2ban
+
+- name: Ensure fail2ban is running
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true
+
+# ---------- Swap (VPS на 1–2 ГБ) ----------
+- name: Check swapfile
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swapfile
+
+- name: Create swapfile
+  when: not swapfile.stat.exists
+  block:
+    - name: Allocate swapfile
+      ansible.builtin.command: fallocate -l {{ swap_size_mb }}M /swapfile
+      changed_when: true
+    - name: Swapfile permissions
+      ansible.builtin.file:
+        path: /swapfile
+        mode: "0600"
+    - name: Format swap
+      ansible.builtin.command: mkswap /swapfile
+      changed_when: true
+    - name: Enable swap
+      ansible.builtin.command: swapon /swapfile
+      changed_when: true
+
+- name: Swap in fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
+
+- name: Lower swappiness
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "10"
+    sysctl_set: true
